@@ -38,7 +38,6 @@ import modules.codeformer_model
 import modules.generation_parameters_copypaste
 import modules.gfpgan_model
 import modules.hypernetworks.ui
-import modules.images_history as img_his
 import modules.ldsr_model
 import modules.scripts
 import modules.shared as shared
@@ -51,12 +50,11 @@ from modules.sd_samplers import samplers, samplers_for_img2img
 import modules.textual_inversion.ui
 import modules.hypernetworks.ui
 
-import modules.images_history as img_his
-
-
 # this is a fix for Windows users. Without it, javascript files will be served with text/html content-type and the browser will not show any UI
 mimetypes.init()
 mimetypes.add_type('application/javascript', '.js')
+txt2img_paste_fields = []
+img2img_paste_fields = []
 
 
 if not cmd_opts.share and not cmd_opts.listen:
@@ -786,6 +784,7 @@ def create_ui(wrap_gradio_gpu_call):
                 ]
             )
 
+            global txt2img_paste_fields 
             txt2img_paste_fields = [
                 (txt2img_prompt, "Prompt"),
                 (txt2img_negative_prompt, "Negative prompt"),
@@ -1056,6 +1055,7 @@ def create_ui(wrap_gradio_gpu_call):
                     outputs=[prompt, negative_prompt, style1, style2],
                 )
 
+            global img2img_paste_fields
             img2img_paste_fields = [
                 (img2img_prompt, "Prompt"),
                 (img2img_negative_prompt, "Negative prompt"),
@@ -1104,9 +1104,9 @@ def create_ui(wrap_gradio_gpu_call):
                                 upscaling_resize_w = gr.Number(label="Width", value=512, precision=0)
                                 upscaling_resize_h = gr.Number(label="Height", value=512, precision=0)
                             upscaling_crop = gr.Checkbox(label='Crop to fit', value=True)
-
+                
                 with gr.Group():
-                    extras_upscaler_1 = gr.Radio(label='Upscaler 1', elem_id="extras_upscaler_1", choices=[x.name for x in shared.sd_upscalers], value=shared.sd_upscalers[0].name, type="index")
+                    extras_upscaler_1 = gr.Radio(label='Upscaler 1', elem_id="extras_upscaler_1", choices=[x.name for x in shared.sd_upscalers], value=shared.sd_upscalers[0].name, type="index") 
 
                 with gr.Group():
                     extras_upscaler_2 = gr.Radio(label='Upscaler 2', elem_id="extras_upscaler_2", choices=[x.name for x in shared.sd_upscalers], value=shared.sd_upscalers[0].name, type="index")
@@ -1193,15 +1193,7 @@ def create_ui(wrap_gradio_gpu_call):
             inputs=[image],
             outputs=[html, generation_info, html2],
         )
-    #images history
-    images_history_switch_dict = {
-        "fn": modules.generation_parameters_copypaste.connect_paste,
-        "t2i": txt2img_paste_fields,
-        "i2i": img2img_paste_fields
-    }
-
-    images_history = img_his.create_history_tabs(gr, opts, cmd_opts, wrap_gradio_call(modules.extras.run_pnginfo), images_history_switch_dict)
-
+   
     with gr.Blocks() as modelmerger_interface:
         with gr.Row().style(equal_height=False):
             with gr.Column(variant='panel'):
@@ -1246,7 +1238,8 @@ def create_ui(wrap_gradio_gpu_call):
                     new_hypernetwork_name = gr.Textbox(label="Name")
                     new_hypernetwork_sizes = gr.CheckboxGroup(label="Modules", value=["768", "320", "640", "1280"], choices=["768", "320", "640", "1280"])
                     new_hypernetwork_layer_structure = gr.Textbox("1, 2, 1", label="Enter hypernetwork layer structure", placeholder="1st and last digit must be 1. ex:'1, 2, 1'")
-                    new_hypernetwork_activation_func = gr.Dropdown(value="relu", label="Select activation function of hypernetwork", choices=["linear", "relu", "leakyrelu", "elu", "swish"])
+                    new_hypernetwork_activation_func = gr.Dropdown(value="relu", label="Select activation function of hypernetwork", choices=modules.hypernetworks.ui.keys)
+                    new_hypernetwork_initialization_option = gr.Dropdown(value = "Normal", label="Select Layer weights initialization. relu-like - Kaiming, sigmoid-like - Xavier is recommended", choices=["Normal", "KaimingUniform", "KaimingNormal", "XavierUniform", "XavierNormal"])
                     new_hypernetwork_add_layer_norm = gr.Checkbox(label="Add layer normalization")
                     new_hypernetwork_use_dropout = gr.Checkbox(label="Use dropout")
                     overwrite_old_hypernetwork = gr.Checkbox(value=False, label="Overwrite Old Hypernetwork")
@@ -1268,12 +1261,19 @@ def create_ui(wrap_gradio_gpu_call):
                     with gr.Row():
                         process_flip = gr.Checkbox(label='Create flipped copies')
                         process_split = gr.Checkbox(label='Split oversized images')
+                        process_focal_crop = gr.Checkbox(label='Auto focal point crop')
                         process_caption = gr.Checkbox(label='Use BLIP for caption')
                         process_caption_deepbooru = gr.Checkbox(label='Use deepbooru for caption', visible=True if cmd_opts.deepdanbooru else False)
 
                     with gr.Row(visible=False) as process_split_extra_row:
                         process_split_threshold = gr.Slider(label='Split image threshold', value=0.5, minimum=0.0, maximum=1.0, step=0.05)
                         process_overlap_ratio = gr.Slider(label='Split image overlap ratio', value=0.2, minimum=0.0, maximum=0.9, step=0.05)
+
+                    with gr.Row(visible=False) as process_focal_crop_row:
+                        process_focal_crop_face_weight = gr.Slider(label='Focal point face weight', value=0.9, minimum=0.0, maximum=1.0, step=0.05)
+                        process_focal_crop_entropy_weight = gr.Slider(label='Focal point entropy weight', value=0.15, minimum=0.0, maximum=1.0, step=0.05)
+                        process_focal_crop_edges_weight = gr.Slider(label='Focal point edges weight', value=0.5, minimum=0.0, maximum=1.0, step=0.05)
+                        process_focal_crop_debug = gr.Checkbox(label='Create debug image')
 
                     with gr.Row():
                         with gr.Column(scale=3):
@@ -1286,6 +1286,12 @@ def create_ui(wrap_gradio_gpu_call):
                         fn=lambda show: gr_show(show),
                         inputs=[process_split],
                         outputs=[process_split_extra_row],
+                    )
+
+                    process_focal_crop.change(
+                        fn=lambda show: gr_show(show),
+                        inputs=[process_focal_crop],
+                        outputs=[process_focal_crop_row],
                     )
 
                 with gr.Tab(label="Train"):
@@ -1350,6 +1356,7 @@ def create_ui(wrap_gradio_gpu_call):
                 overwrite_old_hypernetwork,
                 new_hypernetwork_layer_structure,
                 new_hypernetwork_activation_func,
+                new_hypernetwork_initialization_option,
                 new_hypernetwork_add_layer_norm,
                 new_hypernetwork_use_dropout
             ],
@@ -1375,6 +1382,11 @@ def create_ui(wrap_gradio_gpu_call):
                 process_caption_deepbooru,
                 process_split_threshold,
                 process_overlap_ratio,
+                process_focal_crop,
+                process_focal_crop_face_weight,
+                process_focal_crop_entropy_weight,
+                process_focal_crop_edges_weight,
+                process_focal_crop_debug,
             ],
             outputs=[
                 ti_output,
@@ -1650,7 +1662,6 @@ Requested path was: {f}
         (img2img_interface, "img2img", "img2img"),
         (extras_interface, "Extras", "extras"),
         (pnginfo_interface, "PNG Info", "pnginfo"),
-        (images_history, "Image Browser", "images_history"),
         (modelmerger_interface, "Checkpoint Merger", "modelmerger"),
         (train_interface, "Train", "ti"),
     ]
@@ -1894,6 +1905,7 @@ def load_javascript(raw_response):
         javascript = f'<script>{jsfile.read()}</script>'
 
     scripts_list = modules.scripts.list_scripts("javascript", ".js")
+    
     for basedir, filename, path in scripts_list:
         with open(path, "r", encoding="utf8") as jsfile:
             javascript += f"\n<!-- {filename} --><script>{jsfile.read()}</script>"
