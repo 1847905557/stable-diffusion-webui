@@ -10,7 +10,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 
 from modules.paths import script_path
 
-from modules import devices, sd_samplers, upscaler, extensions
+from modules import devices, sd_samplers, upscaler, extensions, localization
 import modules.codeformer_model as codeformer
 import modules.extras
 import modules.face_restoration
@@ -28,14 +28,15 @@ import modules.txt2img
 import modules.script_callbacks
 
 import modules.ui
-from modules import devices
 from modules import modelloader
-from modules.paths import script_path
 from modules.shared import cmd_opts
 import modules.hypernetworks.hypernetwork
 
 queue_lock = threading.Lock()
-server_name = "0.0.0.0" if cmd_opts.listen else cmd_opts.server_name
+if cmd_opts.server_name:
+    server_name = cmd_opts.server_name
+else:
+    server_name = "0.0.0.0" if cmd_opts.listen else None
 
 def wrap_queued_call(func):
     def f(*args, **kwargs):
@@ -59,11 +60,12 @@ def wrap_gradio_gpu_call(func, extra_outputs=None):
 
         return res
 
-    return modules.ui.wrap_gradio_call(f, extra_outputs=extra_outputs)
+    return modules.ui.wrap_gradio_call(f, extra_outputs=extra_outputs, add_stats=True)
 
 
 def initialize():
     extensions.list_extensions()
+    localization.list_localizations(cmd_opts.localizations_dir)
 
     if cmd_opts.ui_debug_mode:
         shared.sd_upscalers = upscaler.UpscalerLanczos().scalers
@@ -83,6 +85,7 @@ def initialize():
     modules.sd_models.load_model()
     shared.opts.onchange("sd_model_checkpoint", wrap_queued_call(lambda: modules.sd_models.reload_model_weights()))
     shared.opts.onchange("sd_vae", wrap_queued_call(lambda: modules.sd_vae.reload_vae_weights()), call=False)
+    shared.opts.onchange("sd_vae_as_default", wrap_queued_call(lambda: modules.sd_vae.reload_vae_weights()), call=False)
     shared.opts.onchange("sd_hypernetwork", wrap_queued_call(lambda: modules.hypernetworks.hypernetwork.load_hypernetwork(shared.opts.sd_hypernetwork)))
     shared.opts.onchange("sd_hypernetwork_strength", modules.hypernetworks.hypernetwork.apply_strength)
 
@@ -98,7 +101,6 @@ def initialize():
             print("TLS setup invalid, running webui without TLS")
         else:
             print("Running with TLS")
-
 
     # make the program just exit at ctrl+c without waiting for anything
     def sigint_handler(sig, frame):
@@ -185,6 +187,9 @@ def webui():
 
         print('Reloading extensions')
         extensions.list_extensions()
+
+        localization.list_localizations(cmd_opts.localizations_dir)
+
         print('Reloading custom scripts')
         modules.scripts.reload_scripts()
         print('Reloading modules: modules.ui')
