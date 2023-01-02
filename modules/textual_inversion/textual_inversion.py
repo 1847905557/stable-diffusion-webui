@@ -23,6 +23,8 @@ class Embedding:
         self.vec = vec
         self.name = name
         self.step = step
+        self.shape = None
+        self.vectors = 0
         self.cached_checksum = None
         self.sd_checkpoint = None
         self.sd_checkpoint_name = None
@@ -57,8 +59,10 @@ class EmbeddingDatabase:
     def __init__(self, embeddings_dir):
         self.ids_lookup = {}
         self.word_embeddings = {}
+        self.skipped_embeddings = {}
         self.dir_mtime = None
         self.embeddings_dir = embeddings_dir
+        self.expected_shape = -1
 
     def register_embedding(self, embedding, model):
 
@@ -75,19 +79,23 @@ class EmbeddingDatabase:
 
         return embedding
 
-    def load_textual_inversion_embeddings(self):
+    def get_expected_shape(self):
+        vec = shared.sd_model.cond_stage_model.encode_embedding_init_text(",", 1)
+        return vec.shape[1]
+
+    def load_textual_inversion_embeddings(self, force_reload = False):
         mt = os.path.getmtime(self.embeddings_dir)
-        if self.dir_mtime is not None and mt <= self.dir_mtime:
+        if not force_reload and self.dir_mtime is not None and mt <= self.dir_mtime:
             return
 
         self.dir_mtime = mt
         self.ids_lookup.clear()
         self.word_embeddings.clear()
+        self.skipped_embeddings.clear()
+        self.expected_shape = self.get_expected_shape()
 
         def process_file(path, filename):
             name = os.path.splitext(filename)[0]
-
-            data = []
 
             if os.path.splitext(filename.upper())[-1] in ['.PNG', '.WEBP', '.JXL', '.AVIF']:
                 embed_image = Image.open(path)
@@ -122,7 +130,13 @@ class EmbeddingDatabase:
             embedding.step = data.get('step', None)
             embedding.sd_checkpoint = data.get('sd_checkpoint', None)
             embedding.sd_checkpoint_name = data.get('sd_checkpoint_name', None)
-            self.register_embedding(embedding, shared.sd_model)
+            embedding.vectors = vec.shape[0]
+            embedding.shape = vec.shape[-1]
+
+            if self.expected_shape == -1 or self.expected_shape == embedding.shape:
+                self.register_embedding(embedding, shared.sd_model)
+            else:
+                self.skipped_embeddings[name] = embedding
 
         for fn in os.listdir(self.embeddings_dir):
             try:
@@ -133,12 +147,13 @@ class EmbeddingDatabase:
 
                 process_file(fullfn, fn)
             except Exception:
-                print(f"Error loading emedding {fn}:", file=sys.stderr)
+                print(f"Error loading embedding {fn}:", file=sys.stderr)
                 print(traceback.format_exc(), file=sys.stderr)
                 continue
 
-        print(f"Loaded a total of {len(self.word_embeddings)} textual inversion embeddings.")
-        print("Embeddings:", ', '.join(self.word_embeddings.keys()))
+        print(f"Textual inversion embeddings loaded({len(self.word_embeddings)}): {', '.join(self.word_embeddings.keys())}")
+        if len(self.skipped_embeddings) > 0:
+            print(f"Textual inversion embeddings skipped({len(self.skipped_embeddings)}): {', '.join(self.skipped_embeddings.keys())}")
 
     def find_embedding_at_position(self, tokens, offset):
         token = tokens[offset]
@@ -194,7 +209,7 @@ def write_loss(log_directory, filename, step, epoch_len, values):
             csv_writer.writeheader()
 
         epoch = (step - 1) // epoch_len
-        epoch_step = (step - 1) % epoch_len 
+        epoch_step = (step - 1) % epoch_len
 
         csv_writer.writerow({
             "step": step,
@@ -263,16 +278,16 @@ def train_embedding(embedding_name, learn_rate, batch_size, gradient_step, data_
 
     initial_step = embedding.step or 0
     if initial_step >= steps:
-        shared.state.textinfo = f"Model has already been trained beyond specified max steps"
+        shared.state.textinfo = "Model has already been trained beyond specified max steps"
         return embedding, filename
     scheduler = LearnRateScheduler(learn_rate, steps, initial_step)
 
-   # dataset loading may take a while, so input validations and early returns should be done before this
+    # dataset loading may take a while, so input validations and early returns should be done before this
     shared.state.textinfo = f"Preparing dataset from {html.escape(data_root)}..."
     old_parallel_processing_allowed = shared.parallel_processing_allowed
-    
+
     pin_memory = shared.opts.pin_memory
-    
+
     ds = modules.textual_inversion.dataset.PersonalizedBase(data_root=data_root, width=training_width, height=training_height, repeats=shared.opts.training_image_repeats_per_epoch, placeholder_token=embedding_name, model=shared.sd_model, cond_model=shared.sd_model.cond_stage_model, device=devices.device, template_file=template_file, batch_size=batch_size, gradient_step=gradient_step, shuffle_tags=shuffle_tags, tag_drop_out=tag_drop_out, latent_sampling_method=latent_sampling_method)
 
     latent_sampling_method = ds.latent_sampling_method
@@ -295,12 +310,11 @@ def train_embedding(embedding_name, learn_rate, batch_size, gradient_step, data_
     loss_step = 0
     _loss_step = 0 #internal
 
-    
     last_saved_file = "<none>"
     last_saved_image = "<none>"
     forced_filename = "<none>"
     embedding_yet_to_be_embedded = False
-    
+
     pbar = tqdm.tqdm(total=steps - initial_step)
     try:
         for i in range((steps-initial_step) * gradient_step):
@@ -327,10 +341,10 @@ def train_embedding(embedding_name, learn_rate, batch_size, gradient_step, data_
                     c = shared.sd_model.cond_stage_model(batch.cond_text)
                     loss = shared.sd_model(x, c)[0] / gradient_step
                     del x
-                    
+
                     _loss_step += loss.item()
                 scaler.scale(loss).backward()
-                
+
                 # go back until we reach gradient accumulation steps
                 if (j + 1) % gradient_step != 0:
                     continue

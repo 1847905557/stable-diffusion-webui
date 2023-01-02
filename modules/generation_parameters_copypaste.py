@@ -14,6 +14,7 @@ re_param_code = r'\s*([\w ]+):\s*("(?:\\|\"|[^\"])+"|[^,]*)(?:,|$)'
 re_param = re.compile(re_param_code)
 re_params = re.compile(r"^(?:" + re_param_code + "){3,}$")
 re_imagesize = re.compile(r"^(\d+)x(\d+)$")
+re_hypernet_hash = re.compile("\(([0-9a-f]+)\)$")
 type_of_gr_update = type(gr.update())
 paste_fields = {}
 bind_list = []
@@ -37,7 +38,7 @@ def quote(text):
 def image_from_url_text(filedata):
     if type(filedata) == dict and filedata["is_file"]:
         filename = filedata["name"]
-        is_in_right_dir = any(Path(temp_dir).resolve() in Path(filename).resolve().parents for temp_dir in shared.demo.temp_dirs)
+        is_in_right_dir = any([filename in fileset for fileset in shared.demo.temp_file_sets])
         assert is_in_right_dir, 'trying to open image file outside of allowed directories'
 
         return Image.open(filename)
@@ -92,7 +93,7 @@ def integrate_settings_paste_fields(component_dict):
 def create_buttons(tabs_list):
     buttons = {}
     for tab in tabs_list:
-        buttons[tab] = gr.Button(f"Send to {tab}")
+        buttons[tab] = gr.Button(f"Send to {tab}", elem_id=f"{tab}_tab")
     return buttons
 
 
@@ -137,6 +138,30 @@ def run_bind():
                 inputs=None,
                 outputs=None,
             )
+
+
+def find_hypernetwork_key(hypernet_name, hypernet_hash=None):
+    """Determines the config parameter name to use for the hypernet based on the parameters in the infotext.
+
+    Example: an infotext provides "Hypernet: ke-ta" and "Hypernet hash: 1234abcd". For the "Hypernet" config
+    parameter this means there should be an entry that looks like "ke-ta-10000(1234abcd)" to set it to.
+
+    If the infotext has no hash, then a hypernet with the same name will be selected instead.
+    """
+    hypernet_name = hypernet_name.lower()
+    if hypernet_hash is not None:
+        # Try to match the hash in the name
+        for hypernet_key in shared.hypernetworks.keys():
+            result = re_hypernet_hash.search(hypernet_key)
+            if result is not None and result[1] == hypernet_hash:
+                return hypernet_key
+    else:
+        # Fall back to a hypernet with the same name
+        for hypernet_key in shared.hypernetworks.keys():
+            if hypernet_key.lower().startswith(hypernet_name):
+                return hypernet_key
+
+    return None
 
 
 def parse_generation_parameters(x: str):
@@ -187,6 +212,14 @@ Steps: 20, Sampler: Euler a, CFG scale: 7, Seed: 965400086, Size: 512x512, Model
     # Missing CLIP skip means it was set to 1 (the default)
     if "Clip skip" not in res:
         res["Clip skip"] = "1"
+
+    if "Hypernet strength" not in res:
+        res["Hypernet strength"] = "1"
+
+    if "Hypernet" in res:
+        hypernet_name = res["Hypernet"]
+        hypernet_hash = res.get("Hypernet hash", None)
+        res["Hypernet"] = find_hypernetwork_key(hypernet_name, hypernet_hash)
 
     return res
 

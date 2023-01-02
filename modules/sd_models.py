@@ -111,18 +111,19 @@ def model_hash(filename):
 
 def select_checkpoint():
     model_checkpoint = shared.opts.sd_model_checkpoint
+        
     checkpoint_info = checkpoints_list.get(model_checkpoint, None)
     if checkpoint_info is not None:
         return checkpoint_info
 
     if len(checkpoints_list) == 0:
-        print(f"No checkpoints found. When searching for checkpoints, looked at:", file=sys.stderr)
+        print("No checkpoints found. When searching for checkpoints, looked at:", file=sys.stderr)
         if shared.cmd_opts.ckpt is not None:
             print(f" - file {os.path.abspath(shared.cmd_opts.ckpt)}", file=sys.stderr)
         print(f" - directory {model_path}", file=sys.stderr)
         if shared.cmd_opts.ckpt_dir is not None:
             print(f" - directory {os.path.abspath(shared.cmd_opts.ckpt_dir)}", file=sys.stderr)
-        print(f"Can't run without a checkpoint. Find and place a .ckpt file into any of those locations. The program will exit.", file=sys.stderr)
+        print("Can't run without a checkpoint. Find and place a .ckpt file into any of those locations. The program will exit.", file=sys.stderr)
         exit(1)
 
     checkpoint_info = next(iter(checkpoints_list.values()))
@@ -227,6 +228,8 @@ def load_model_weights(model, checkpoint_info, vae_file="auto"):
     model.sd_model_checkpoint = checkpoint_file
     model.sd_checkpoint_info = checkpoint_info
 
+    model.logvar = model.logvar.to(devices.device)  # fix for training
+
     sd_vae.delete_base_vae()
     sd_vae.clear_loaded_vae()
     vae_file = sd_vae.resolve_vae(checkpoint_file, vae_file=vae_file)
@@ -293,12 +296,15 @@ def load_model(checkpoint_info=None):
     if should_hijack_inpainting(checkpoint_info):
         # Hardcoded config for now...
         sd_config.model.target = "ldm.models.diffusion.ddpm.LatentInpaintDiffusion"
-        sd_config.model.params.use_ema = False
         sd_config.model.params.conditioning_key = "hybrid"
         sd_config.model.params.unet_config.params.in_channels = 9
+        sd_config.model.params.finetune_keys = None
 
         # Create a "fake" config with a different name so that we know to unload it when switching models.
         checkpoint_info = checkpoint_info._replace(config=checkpoint_info.config.replace(".yaml", "-inpainting.yaml"))
+
+    if not hasattr(sd_config.model.params, "use_ema"):
+        sd_config.model.params.use_ema = False
 
     do_inpainting_hijack()
 
@@ -320,7 +326,10 @@ def load_model(checkpoint_info=None):
 
     script_callbacks.model_loaded_callback(sd_model)
 
-    print(f"Model loaded.")
+    print("Model loaded.")
+
+    sd_hijack.model_hijack.embedding_db.load_textual_inversion_embeddings(force_reload = True) # Reload embeddings after model load as they may or may not fit the model
+
     return sd_model
 
 
@@ -355,5 +364,5 @@ def reload_model_weights(sd_model=None, info=None):
     if not shared.cmd_opts.lowvram and not shared.cmd_opts.medvram:
         sd_model.to(devices.device)
 
-    print(f"Weights loaded.")
+    print("Weights loaded.")
     return sd_model
