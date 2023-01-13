@@ -7,7 +7,7 @@ from pathlib import Path
 
 import gradio as gr
 from modules.shared import script_path
-from modules import shared, ui_tempdir
+from modules import shared, ui_tempdir, script_callbacks
 import tempfile
 from PIL import Image
 
@@ -198,10 +198,10 @@ def restore_old_hires_fix_params(res):
     firstpass_height = res.get('First pass size-2', None)
 
     if shared.opts.use_old_hires_fix_width_height:
-        hires_width = int(res.get("Hires resize-1", None))
-        hires_height = int(res.get("Hires resize-2", None))
+        hires_width = int(res.get("Hires resize-1", 0))
+        hires_height = int(res.get("Hires resize-2", 0))
 
-        if hires_width is not None and hires_height is not None:
+        if hires_width and hires_height:
             res['Size-1'] = hires_width
             res['Size-2'] = hires_height
             return
@@ -298,6 +298,7 @@ def connect_paste(button, paste_fields, input_comp, jsfunc=None):
                     prompt = file.read()
 
         params = parse_generation_parameters(prompt)
+        script_callbacks.infotext_pasted_callback(prompt, params)
         res = []
 
         for output, key in paste_fields:
