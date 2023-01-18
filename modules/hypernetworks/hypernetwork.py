@@ -12,7 +12,7 @@ import torch
 import tqdm
 from einops import rearrange, repeat
 from ldm.util import default
-from modules import devices, processing, sd_models, shared, sd_samplers, hashes
+from modules import devices, processing, sd_models, shared, sd_samplers, hashes, sd_hijack_checkpoint
 from modules.textual_inversion import textual_inversion, logging
 from modules.textual_inversion.learn_schedule import LearnRateScheduler
 from torch import einsum
@@ -453,7 +453,7 @@ def create_hypernetwork(name, enable_sizes, overwrite_old, layer_structure=None,
     shared.reload_hypernetworks()
 
 
-def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, gradient_step, data_root, log_directory, training_width, training_height, varsize, steps, clip_grad_mode, clip_grad_value, shuffle_tags, tag_drop_out, latent_sampling_method, create_image_every, save_hypernetwork_every, template_filename, preview_from_txt2img, preview_prompt, preview_negative_prompt, preview_steps, preview_sampler_index, preview_cfg_scale, preview_seed, preview_width, preview_height):
+def train_hypernetwork(id_task, hypernetwork_name, learn_rate, batch_size, gradient_step, data_root, log_directory, training_width, training_height, varsize, steps, clip_grad_mode, clip_grad_value, shuffle_tags, tag_drop_out, latent_sampling_method, create_image_every, save_hypernetwork_every, template_filename, preview_from_txt2img, preview_prompt, preview_negative_prompt, preview_steps, preview_sampler_index, preview_cfg_scale, preview_seed, preview_width, preview_height):
     # images allows training previews to have infotext. Importing it at the top causes a circular import problem.
     from modules import images
 
@@ -561,6 +561,7 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, gradient_step,
     _loss_step = 0 #internal
     # size = len(ds.indexes)
     # loss_dict = defaultdict(lambda : deque(maxlen = 1024))
+    loss_logging = deque(maxlen=len(ds) * 3)  # this should be configurable parameter, this is 3 * epoch(dataset size)
     # losses = torch.zeros((size,))
     # previous_mean_losses = [0]
     # previous_mean_loss = 0
@@ -574,6 +575,8 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, gradient_step,
 
     pbar = tqdm.tqdm(total=steps - initial_step)
     try:
+        sd_hijack_checkpoint.add()
+
         for i in range((steps-initial_step) * gradient_step):
             if scheduler.finished:
                 break
@@ -610,7 +613,7 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, gradient_step,
                 # go back until we reach gradient accumulation steps
                 if (j + 1) % gradient_step != 0:
                     continue
-
+                loss_logging.append(_loss_step)
                 if clip_grad:
                     clip_grad(weights, clip_grad_sched.learn_rate)
                 
@@ -629,7 +632,6 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, gradient_step,
 
                 description = f"Training hypernetwork [Epoch {epoch_num}: {epoch_step+1}/{steps_per_epoch}]loss: {loss_step:.7f}"
                 pbar.set_description(description)
-                shared.state.textinfo = description
                 if hypernetwork_dir is not None and steps_done % save_hypernetwork_every == 0:
                     # Before saving, change name to match current checkpoint.
                     hypernetwork_name_every = f'{hypernetwork_name}-{steps_done}'
@@ -645,7 +647,7 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, gradient_step,
                 if shared.opts.training_enable_tensorboard:
                     epoch_num = hypernetwork.step // len(ds)
                     epoch_step = hypernetwork.step - (epoch_num * len(ds)) + 1
-
+                    mean_loss = sum(loss_logging) / len(loss_logging)
                     textual_inversion.tensorboard_add(tensorboard_writer, loss=mean_loss, global_step=hypernetwork.step, step=epoch_step, learn_rate=scheduler.learn_rate, epoch_num=epoch_num)
 
                 textual_inversion.write_loss(log_directory, "hypernetwork_loss.csv", hypernetwork.step, steps_per_epoch, {
@@ -689,9 +691,6 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, gradient_step,
 
                     processed = processing.process_images(p)
                     image = processed.images[0] if len(processed.images) > 0 else None
-                    
-                    if shared.opts.training_enable_tensorboard and shared.opts.training_tensorboard_save_images:
-                        textual_inversion.tensorboard_add_image(tensorboard_writer, f"Validation at epoch {epoch_num}", image, hypernetwork.step)
 
                     if unload:
                         shared.sd_model.cond_stage_model.to(devices.cpu)
@@ -701,7 +700,11 @@ def train_hypernetwork(hypernetwork_name, learn_rate, batch_size, gradient_step,
                         torch.cuda.set_rng_state_all(cuda_rng_state)
                     hypernetwork.train()
                     if image is not None:
-                        shared.state.current_image = image
+                        shared.state.assign_current_image(image)
+                        if shared.opts.training_enable_tensorboard and shared.opts.training_tensorboard_save_images:
+                            textual_inversion.tensorboard_add_image(tensorboard_writer,
+                                                                    f"Validation at epoch {epoch_num}", image,
+                                                                    hypernetwork.step)
                         last_saved_image, last_text_info = images.save_image(image, images_dir, "", p.seed, p.prompt, shared.opts.samples_format, processed.infotexts[0], p=p, forced_filename=forced_filename, save_to_dirs=False)
                         last_saved_image += f", prompt: {preview_text}"
 
@@ -723,6 +726,9 @@ Last saved image: {html.escape(last_saved_image)}<br/>
         pbar.close()
         hypernetwork.eval()
         #report_statistics(loss_dict)
+        sd_hijack_checkpoint.remove()
+
+
 
     filename = os.path.join(shared.cmd_opts.hypernetwork_dir, f'{hypernetwork_name}.pt')
     hypernetwork.optimizer_name = optimizer_name

@@ -72,6 +72,13 @@ def refresh_vae_list():
             os.path.join(shared.cmd_opts.ckpt_dir, '**/*.vae.safetensors'),
         ]
 
+    if shared.cmd_opts.vae_dir is not None and os.path.isdir(shared.cmd_opts.vae_dir):
+        paths += [
+            os.path.join(shared.cmd_opts.vae_dir, '**/*.ckpt'),
+            os.path.join(shared.cmd_opts.vae_dir, '**/*.pt'),
+            os.path.join(shared.cmd_opts.vae_dir, '**/*.safetensors'),
+        ]
+
     candidates = []
     for path in paths:
         candidates += glob.iglob(path, recursive=True)
@@ -94,8 +101,10 @@ def resolve_vae(checkpoint_file):
     if shared.cmd_opts.vae_path is not None:
         return shared.cmd_opts.vae_path, 'from commandline argument'
 
+    is_automatic = shared.opts.sd_vae in {"Automatic", "auto"}  # "auto" for people with old config
+
     vae_near_checkpoint = find_vae_near_checkpoint(checkpoint_file)
-    if vae_near_checkpoint is not None and (shared.opts.sd_vae_as_default or shared.opts.sd_vae == "Automatic"):
+    if vae_near_checkpoint is not None and (shared.opts.sd_vae_as_default or is_automatic):
         return vae_near_checkpoint, 'found near the checkpoint'
 
     if shared.opts.sd_vae == "None":
@@ -105,7 +114,7 @@ def resolve_vae(checkpoint_file):
     if vae_from_options is not None:
         return vae_from_options, 'specified in settings'
 
-    if shared.opts.sd_vae != "Automatic":
+    if not is_automatic:
         print(f"Couldn't find VAE named {shared.opts.sd_vae}; using None instead")
 
     return None, None

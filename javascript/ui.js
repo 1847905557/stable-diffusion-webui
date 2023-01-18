@@ -45,10 +45,27 @@ function switch_to_txt2img(){
     return args_to_array(arguments);
 }
 
-function switch_to_img2img(){
+function switch_to_img2img_tab(no){
     gradioApp().querySelector('#tabs').querySelectorAll('button')[1].click();
-    gradioApp().getElementById('mode_img2img').querySelectorAll('button')[0].click();
+    gradioApp().getElementById('mode_img2img').querySelectorAll('button')[no].click();
+}
+function switch_to_img2img(){
+    switch_to_img2img_tab(0);
+    return args_to_array(arguments);
+}
 
+function switch_to_sketch(){
+    switch_to_img2img_tab(1);
+    return args_to_array(arguments);
+}
+
+function switch_to_inpaint(){
+    switch_to_img2img_tab(2);
+    return args_to_array(arguments);
+}
+
+function switch_to_inpaint_sketch(){
+    switch_to_img2img_tab(3);
     return args_to_array(arguments);
 }
 
@@ -92,6 +109,13 @@ function get_extras_tab_index(){
     return [get_tab_index('mode_extras'), get_tab_index('extras_resize_mode'), ...args]
 }
 
+function get_img2img_tab_index() {
+    let res = args_to_array(arguments)
+    res.splice(-2)
+    res[0] = get_tab_index('mode_img2img')
+    return res
+}
+
 function create_submit_args(args){
     res = []
     for(var i=0;i<args.length;i++){
@@ -109,18 +133,41 @@ function create_submit_args(args){
     return res
 }
 
-function submit(){
-    requestProgress('txt2img')
+function showSubmitButtons(tabname, show){
+    gradioApp().getElementById(tabname+'_interrupt').style.display = show ? "none" : "block"
+    gradioApp().getElementById(tabname+'_skip').style.display = show ? "none" : "block"
+}
 
-    return create_submit_args(arguments)
+function submit(){
+    rememberGallerySelection('txt2img_gallery')
+    showSubmitButtons('txt2img', false)
+
+    var id = randomId()
+    requestProgress(id, gradioApp().getElementById('txt2img_gallery_container'), gradioApp().getElementById('txt2img_gallery'), function(){
+        showSubmitButtons('txt2img', true)
+
+    })
+
+    var res = create_submit_args(arguments)
+
+    res[0] = id
+
+    return res
 }
 
 function submit_img2img(){
-    requestProgress('img2img')
+    rememberGallerySelection('img2img_gallery')
+    showSubmitButtons('img2img', false)
 
-    res = create_submit_args(arguments)
+    var id = randomId()
+    requestProgress(id, gradioApp().getElementById('img2img_gallery_container'), gradioApp().getElementById('img2img_gallery'), function(){
+        showSubmitButtons('img2img', true)
+    })
 
-    res[0] = get_tab_index('mode_img2img')
+    var res = create_submit_args(arguments)
+
+    res[0] = id
+    res[1] = get_tab_index('mode_img2img')
 
     return res
 }
@@ -237,4 +284,12 @@ function restart_reload(){
     setTimeout(function(){location.reload()},2000)
 
     return []
+}
+
+// Simulate an `input` DOM event for Gradio Textbox component. Needed after you edit its contents in javascript, otherwise your edits
+// will only visible on web page and not sent to python.
+function updateInput(target){
+	let e = new Event("input", { bubbles: true })
+	Object.defineProperty(e, "target", {value: target})
+	target.dispatchEvent(e);
 }
