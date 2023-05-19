@@ -43,4 +43,7 @@ export COMMANDLINE_ARGS="--port 6006 --data-dir /root/autodl-tmp/"
 # Uncomment to enable accelerated launch
 #export ACCELERATE="True"
 
+# Uncomment to disable TCMalloc
+#export NO_TCMALLOC="True"
+
 ###########################################
